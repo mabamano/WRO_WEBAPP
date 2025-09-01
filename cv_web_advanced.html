@@ -16,7 +16,7 @@
     header h1 { font-size: 18px; margin: 0; color: var(--fg); }
     header .dot { width: 10px; height: 10px; border-radius: 50%; background: #555; display: inline-block; }
     header .dot.on { background: #39d353; }
-    main { display: grid; grid-template-columns: 400px 1fr; gap: 16px; padding: 16px; }
+    main { display: grid; grid-template-columns: 600px 1fr; gap: 16px; padding: 16px; }
     section.card { background: #0f1520; border: 1px solid #182434; border-radius: 16px; padding: 14px; }
     h2 { font-size: 16px; margin: 0 0 10px; color: var(--accent); }
     .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
@@ -29,7 +29,7 @@
     input[type="range"] { width: 160px; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .muted { color: var(--muted); }
-    .kv { display: grid; grid-template-columns: 150px 1fr; gap: 6px 10px; }
+    .kv { display: grid; grid-template-columns: 200px 1fr; gap: 6px 10px; }
     canvas, video { width: 640px; height: 480px; background: #000; border-radius: 12px; }
     .stack { display: grid; gap: 8px; }
     .pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; background: #122033; border: 1px solid #1b2f47; color: var(--muted); }
@@ -279,44 +279,30 @@
     // ---------- Pillar Detection ----------
     function findPillar(contours, target, p, colour) {
       let numP = 0;
-      
-      for(let i = 0; i < contours.size(); i++) {
+      // Cache ROI3 numbers once to avoid repeated parsing and allocations
+      const [roi3x, roi3y, , roi3Bottom] = parseTuple(ui.roi3.value);
+      for (let i = 0; i < contours.size(); i++) {
         const cnt = contours.get(i);
         const area = cv.contourArea(cnt);
-        
         // Area thresholds
-        if ((area > 150 && colour == "red") || (area > 200 && colour == "green")) {
-          
-          // Get bounding rectangle
-          const approx = cv.approxPolyDP(cnt, 0.01 * cv.arcLength(cnt, true), true);
-          const boundingRect = cv.boundingRect(approx);
-          const x = boundingRect.x + parseTuple(ui.roi3.value)[0] + boundingRect.width / 2;
-          const y = boundingRect.y + parseTuple(ui.roi3.value)[1] + boundingRect.height;
-          
-          // Calculate distance from bottom center
-          const tempDist = Math.round(Math.sqrt(Math.pow(x - 320, 2) + Math.pow(y - 480, 2)));
-          
-          if (160 < tempDist && tempDist < 380) {
-            numP += 1;
-          }
-          
-          // Skip if too close to bottom
-          if (y > parseTuple(ui.roi3.value)[3] - endConst || tempDist > maxDist) {
-            continue;
-          }
-          
-          // Update pillar if closer
+        if ((area > 150 && colour === "red") || (area > 200 && colour === "green")) {
+          // Use boundingRect directly (no approxPolyDP) to reduce allocations
+          const r = cv.boundingRect(cnt);
+          const x = r.x + roi3x + r.width / 2;
+          const y = r.y + roi3y + r.height;
+          // Distance from bottom center
+          const dx = x - 320; const dy = y - 480;
+          const tempDist = Math.round(Math.hypot(dx, dy));
+          if (160 < tempDist && tempDist < 380) numP += 1;
+          // Skip if too close or too far
+          if (y > roi3Bottom - endConst || tempDist > maxDist) continue;
+          // Closest pillar wins
           if (tempDist < p.dist) {
-            p.area = area;
-            p.dist = tempDist;
-            p.y = y;
-            p.x = x;
-            p.target = target;
-            p.setDimensions(boundingRect.width, boundingRect.height);
+            p.area = area; p.dist = tempDist; p.y = y; p.x = x;
+            p.target = target; p.setDimensions(r.width, r.height);
           }
         }
       }
-      
       return { p, numP };
     }
 
@@ -339,7 +325,7 @@
         // Grab frame
         const video = ui.video;
         const canvas = ui.canvas;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: false });
         ctx.drawImage(video, 0,0, canvas.width, canvas.height);
 
                    // Make a cv.Mat from canvas
@@ -439,7 +425,8 @@
         const redContour = redResult.contours.get(redResult.maxIdx);
         if (redContour.rows > 0) {
           ctx.beginPath();
-          for (let i = 0; i < redContour.rows; i++) {
+          const n = Math.min(redContour.rows, 200);
+          for (let i = 0; i < n; i++) {
             const x = redContour.data32S[i * 2] + r3.x;
             const y = redContour.data32S[i * 2 + 1] + r3.y;
             if (i === 0) {
@@ -459,7 +446,8 @@
         const greenContour = greenResult.contours.get(greenResult.maxIdx);
         if (greenContour.rows > 0) {
           ctx.beginPath();
-          for (let i = 0; i < greenContour.rows; i++) {
+          const n = Math.min(greenContour.rows, 200);
+          for (let i = 0; i < n; i++) {
             const x = greenContour.data32S[i * 2] + r3.x;
             const y = greenContour.data32S[i * 2 + 1] + r3.y;
             if (i === 0) {
@@ -479,7 +467,8 @@
         const magentaContour = magentaResult.contours.get(magentaResult.maxIdx);
         if (magentaContour.rows > 0) {
           ctx.beginPath();
-          for (let i = 0; i < magentaContour.rows; i++) {
+          const n = Math.min(magentaContour.rows, 200);
+          for (let i = 0; i < n; i++) {
             const x = magentaContour.data32S[i * 2] + r4.x;
             const y = magentaContour.data32S[i * 2 + 1] + r4.y;
             if (i === 0) {

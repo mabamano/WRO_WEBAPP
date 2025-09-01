@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HSV Probe – OpenCV.js</title>
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvReady()"></script>
+  <style>
+    :root { --bg:#0b0f14; --fg:#e7eef6; --muted:#9fb3c8; --accent:#4ecdc4; --accent2:#ffcc00; }
+    *{ box-sizing:border-box; }
+    body{ margin:0; background:var(--bg); color:var(--fg); font:15px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    header{ padding:14px 18px; display:flex; gap:12px; align-items:center; border-bottom:1px solid #14202a; }
+    header h1{ font-size:18px; margin:0; }
+    main{ display:grid; grid-template-columns: 360px 1fr; gap:16px; padding:16px; }
+    section.card{ background:#0f1520; border:1px solid #182434; border-radius:16px; padding:14px; }
+    .row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .kv{ display:grid; grid-template-columns: 140px 1fr; gap:6px 10px; }
+    input[type="number"], input[type="text"]{ width:7.5rem; padding:6px 8px; border-radius:10px; border:1px solid #223549; background:#0e1724; color:var(--fg); }
+    button{ padding:8px 12px; border-radius:12px; border:1px solid #213246; background:#152133; color:var(--fg); cursor:pointer; }
+    button.primary{ background:var(--accent); color:#041015; border-color:transparent; font-weight:600; }
+    canvas, video{ width:640px; height:480px; background:#000; border-radius:12px; }
+    .muted{ color:var(--muted); }
+    .pill{ padding:2px 8px; border-radius:999px; font-size:12px; background:#122033; border:1px solid #1b2f47; color:var(--muted); }
+    .ok{ color:#39d353; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>HSV Probe – OpenCV.js</h1>
+    <span id="cvStatus" class="pill">OpenCV: loading…</span>
+  </header>
+
+  <main>
+    <section class="card" style="height:max-content">
+      <h2>Controls</h2>
+      <div class="row">
+        <button id="btnStart" class="primary">Start</button>
+        <button id="btnStop">Stop</button>
+      </div>
+      <h2 style="margin-top:12px">ROI (x1,y1,x2,y2)</h2>
+      <div class="kv">
+        <label>ROI</label><input type="text" id="roi" value="160,140,480,340" />
+      </div>
+      <h2 style="margin-top:12px">Mask params</h2>
+      <div class="kv">
+        <label>Min S</label><input type="number" id="minS" value="80" />
+        <label>Min V</label><input type="number" id="minV" value="80" />
+      </div>
+      <h2 style="margin-top:12px">Probe</h2>
+      <div class="kv">
+        <label>Largest area</label><span id="area">0</span>
+        <label>Mean HSV</label><span id="hsv">—</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>View</h2>
+      <div class="row"><video id="video" autoplay playsinline muted width="640" height="480"></video></div>
+      <div class="row"><canvas id="canvas" width="640" height="480"></canvas></div>
+      <div class="row muted"><span>Draws a single ROI and the largest contour inside. Shows mean HSV of that contour (computed on original HSV image, not the binary mask).</span></div>
+    </section>
+  </main>
+
+  <script>
+    let cvReady = false; let running = false; let rafId = null;
+    const ui = {
+      cvStatus: document.getElementById('cvStatus'),
+      btnStart: document.getElementById('btnStart'), btnStop: document.getElementById('btnStop'),
+      roi: document.getElementById('roi'), minS: document.getElementById('minS'), minV: document.getElementById('minV'),
+      area: document.getElementById('area'), hsv: document.getElementById('hsv'),
+      video: document.getElementById('video'), canvas: document.getElementById('canvas')
+    };
+
+    function onOpenCvReady(){
+      cv['onRuntimeInitialized'] = () => {
+        cvReady = true; ui.cvStatus.textContent = 'OpenCV: ready'; ui.cvStatus.classList.add('ok');
+        startCamera();
+      };
+    }
+
+    async function startCamera(){
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'environment' }, audio: false });
+        ui.video.srcObject = stream;
+      }catch(err){ alert('Camera error: '+err); }
+    }
+
+    function parseTuple(str){ return str.split(',').map(s=>Number(s.trim())); }
+    function getROI(mat, roiStr){ const [x1,y1,x2,y2] = parseTuple(roiStr); const rect = new cv.Rect(x1,y1, x2-x1, y2-y1); return { sub: mat.roi(rect), rect } }
+
+    function largestContour(bin){
+      const contours = new cv.MatVector(); const hierarchy = new cv.Mat();
+      cv.findContours(bin, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      let maxA = 0, maxIdx = -1; for(let i=0;i<contours.size();i++){ const a = cv.contourArea(contours.get(i)); if(a>maxA){ maxA=a; maxIdx=i; } }
+      return { maxA, maxIdx, contours, hierarchy };
+    }
+
+    function loop(){
+      if(!running || !cvReady){ rafId = requestAnimationFrame(loop); return; }
+      try{
+        const ctx = ui.canvas.getContext('2d', { willReadFrequently: true, alpha: false });
+        ctx.drawImage(ui.video, 0,0, ui.canvas.width, ui.canvas.height);
+
+        // Frame mats
+        let src = cv.imread(ui.canvas); // RGBA
+        cv.cvtColor(src, src, cv.COLOR_RGBA2BGR);
+        let hsv = new cv.Mat(); cv.cvtColor(src, hsv, cv.COLOR_BGR2HSV);
+        let blurred = new cv.Mat(); cv.GaussianBlur(hsv, blurred, new cv.Size(7,7), 0, 0, cv.BORDER_DEFAULT);
+
+        // ROI
+        const roi = getROI(blurred, ui.roi.value);
+
+        // Binary mask by S/V floor; hue free (0..179)
+        const minS = Number(ui.minS.value)||0; const minV = Number(ui.minV.value)||0;
+        const low = new cv.Mat(1,1,cv.CV_8UC3, new cv.Scalar(0, minS, minV));
+        const high = new cv.Mat(1,1,cv.CV_8UC3, new cv.Scalar(179,255,255));
+        let mask = new cv.Mat(); cv.inRange(roi.sub, low, high, mask);
+
+        // Largest contour
+        const res = largestContour(mask);
+
+        // Overlay: ROI
+        ctx.strokeStyle = '#ffcc00'; ctx.lineWidth = 2; const r = roi.rect; ctx.strokeRect(r.x, r.y, r.width, r.height);
+
+        let meanHSVText = '—';
+        if(res.maxIdx >= 0){
+          // Draw contour
+          ctx.strokeStyle = '#39d353';
+          const c = res.contours.get(res.maxIdx);
+          if(c.rows > 0){
+            ctx.beginPath(); const n = Math.min(c.rows, 200);
+            for(let i=0;i<n;i++){ const x = c.data32S[i*2] + r.x; const y = c.data32S[i*2+1] + r.y; if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }
+            ctx.closePath(); ctx.stroke();
+          }
+
+          // Compute mean HSV inside contour using a contour mask
+          const roiForMean = hsv.roi(r); // original HSV (not blurred)
+          let contourMask = new cv.Mat.zeros(r.height, r.width, cv.CV_8UC1);
+          // Shift contour to ROI-local coords
+          let cShift = new cv.MatVector(); cShift.push_back(c);
+          cv.drawContours(contourMask, cShift, 0, new cv.Scalar(255), -1, cv.LINE_8);
+          const mean = cv.mean(roiForMean, contourMask);
+          meanHSVText = `${mean[0]|0}, ${mean[1]|0}, ${mean[2]|0}`;
+          contourMask.delete(); cShift.delete(); roiForMean.delete();
+        }
+
+        // Debug panel
+        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(6,6, 220, 54);
+        ctx.fillStyle = '#e7eef6'; ctx.font='12px monospace';
+        ctx.fillText(`area: ${res.maxA.toFixed(0)}`, 12, 22);
+        ctx.fillText(`mean HSV: ${meanHSVText}`, 12, 38);
+
+        // UI labels
+        ui.area.textContent = res.maxA.toFixed(0);
+        ui.hsv.textContent = meanHSVText;
+
+        // Cleanup
+        src.delete(); hsv.delete(); blurred.delete(); roi.sub.delete(); mask.delete(); low.delete(); high.delete();
+        res.contours.delete(); res.hierarchy.delete();
+
+        rafId = requestAnimationFrame(loop);
+      }catch(e){ console.log('Loop error:', e); rafId = requestAnimationFrame(loop); }
+    }
+
+    ui.btnStart.addEventListener('click', () => { if(!cvReady){ alert('OpenCV not ready yet'); return; } running = true; if(!rafId) rafId = requestAnimationFrame(loop); });
+    ui.btnStop.addEventListener('click', () => { running = false; if(rafId){ cancelAnimationFrame(rafId); rafId = null; } });
+    window.addEventListener('beforeunload', () => { running = false; if(rafId) cancelAnimationFrame(rafId); });
+  </script>
+</body>
+</html>
+
+
