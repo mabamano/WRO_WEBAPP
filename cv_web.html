@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RC Autonomy – OpenCV.js + Web Serial</title>
+  <!-- OpenCV.js (WASM). You can also download and host locally if needed. -->
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvReady()" ></script>
+  <style>
+    :root {
+      --bg: #0b0f14; --fg: #e7eef6; --muted:#9fb3c8; --accent:#4ecdc4; --accent2:#ffcc00; --bad:#ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    header { padding: 14px 18px; display: flex; gap: 12px; align-items: center; border-bottom: 1px solid #14202a; }
+    header h1 { font-size: 18px; margin: 0; color: var(--fg); }
+    header .dot { width: 10px; height: 10px; border-radius: 50%; background: #555; display: inline-block; }
+    header .dot.on { background: #39d353; }
+    main { display: grid; grid-template-columns: 400px 1fr; gap: 16px; padding: 16px; }
+    section.card { background: #0f1520; border: 1px solid #182434; border-radius: 16px; padding: 14px; }
+    h2 { font-size: 16px; margin: 0 0 10px; color: var(--accent); }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button { padding: 8px 12px; border-radius: 12px; border: 1px solid #213246; background: #152133; color: var(--fg); cursor: pointer; }
+    button:hover { background: #1b2a40; }
+    button.primary { background: var(--accent); color: #041015; border-color: transparent; font-weight: 600; }
+    button.warn { background: var(--bad); color: #170606; border: none; }
+    label { color: var(--muted); font-size: 12px; }
+    input[type="number"] { width: 6rem; padding: 6px 8px; border-radius: 10px; border: 1px solid #223549; background: #0e1724; color: var(--fg); }
+    input[type="range"] { width: 160px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .muted { color: var(--muted); }
+    .kv { display: grid; grid-template-columns: 150px 1fr; gap: 6px 10px; }
+    canvas, video { width: 640px; height: 480px; background: #000; border-radius: 12px; }
+    .stack { display: grid; gap: 8px; }
+    .pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; background: #122033; border: 1px solid #1b2f47; color: var(--muted); }
+    .ok { color: #39d353; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>RC Autonomy – OpenCV.js + Web Serial</h1>
+    <span class="pill">Android + OTG + Chrome</span>
+    <span id="cvStatus" class="pill">OpenCV: loading…</span>
+    <span id="serialDot" class="dot" title="Serial status"></span>
+  </header>
+
+  <main>
+    <!-- Controls -->
+    <section class="card stack" style="height:max-content">
+      <h2>Controls</h2>
+      <div class="row">
+        <button class="primary" id="btnConnect">Connect Serial</button>
+        <button id="btnStart">Start</button>
+        <button id="btnStop" class="warn">Stop</button>
+      </div>
+      <div class="kv" style="margin-top:10px">
+        <label>Baud</label><input type="number" id="baud" value="9600" />
+        <label>Send mode</label>
+        <select id="sendMode">
+          <option value="compact">A:<angle>;S:<speed>\n</option>
+          <option value="json">{"angle":<angle>,"speed":<speed>}\n</option>
+        </select>
+        <label>Send period (ms)</label><input type="number" id="sendMs" value="50" />
+        <label>Preview</label><span id="previewText" class="muted">—</span>
+      </div>
+
+      <h2 style="margin-top:12px">Steering Params</h2>
+      <div class="kv">
+        <label>kp</label><input type="number" id="kp" value="0.02" step="0.001" />
+        <label>kd</label><input type="number" id="kd" value="0.006" step="0.001" />
+        <label>Straight (deg)</label><input type="number" id="straightConst" value="87" />
+        <label>Speed (µs / duty)</label><input type="number" id="speed" value="1665" />
+        <label>Turn thresh</label><input type="number" id="turnThresh" value="150" />
+        <label>Exit thresh</label><input type="number" id="exitThresh" value="1500" />
+        <label>Turn deviation</label><input type="number" id="tDeviation" value="25" />
+      </div>
+
+      <h2 style="margin-top:12px">Color Thresholds (HSV)</h2>
+      <p class="muted">Tune these to match your mat/lighting. Values are H,S,V in 0–179,0–255,0–255.</p>
+      <div class="grid-2">
+        <div>
+          <strong>Black (walls)</strong>
+          <div class="kv">
+            <label>low</label><input type="text" id="blkLow" value="0,0,0" />
+            <label>high</label><input type="text" id="blkHigh" value="179,255,60" />
+          </div>
+        </div>
+        <div>
+          <strong>Orange (turn marker)</strong>
+          <div class="kv">
+            <label>low</label><input type="text" id="orgLow" value="5,120,120" />
+            <label>high</label><input type="text" id="orgHigh" value="25,255,255" />
+          </div>
+        </div>
+        <div>
+          <strong>Blue (turn marker)</strong>
+          <div class="kv">
+            <label>low</label><input type="text" id="bluLow" value="95,120,80" />
+            <label>high</label><input type="text" id="bluHigh" value="125,255,255" />
+          </div>
+        </div>
+      </div>
+
+      <h2 style="margin-top:12px">ROIs (x1,y1,x2,y2)</h2>
+      <div class="grid-2">
+        <div>
+          <strong>Left lane ROI1</strong>
+          <input type="text" id="roi1" value="20,170,240,220" />
+        </div>
+        <div>
+          <strong>Right lane ROI2</strong>
+          <input type="text" id="roi2" value="400,170,620,220" />
+        </div>
+        <div>
+          <strong>Center line ROI3</strong>
+          <input type="text" id="roi3" value="200,300,440,350" />
+        </div>
+      </div>
+
+      <h2 style="margin-top:12px">Status</h2>
+      <div class="kv">
+        <label>Turns</label><span id="turns">0</span>
+        <label>Turn dir</label><span id="turnDir">none</span>
+        <label>Angle</label><span id="angle">—</span>
+        <label>Areas (L/R)</label><span id="areas">—</span>
+      </div>
+    </section>
+
+    <!-- Video/Processing -->
+    <section class="card stack">
+      <h2>Vision</h2>
+      <div class="row">
+        <video id="video" autoplay playsinline muted width="640" height="480"></video>
+      </div>
+      <div class="row">
+        <canvas id="canvas" width="640" height="480"></canvas>
+      </div>
+      <div class="row muted">
+        <span>Overlay shows ROIs and detected contours (approx).</span>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // ---------- State ----------
+    let cvReady = false;
+    let running = false;
+    let port, writer;
+    let sendTimer = null;
+
+    // Logic state (mirrors your Python)
+    let lTurn = false, rTurn = false;
+    let t = 0; // number of completed turns
+    let lDetected = false; // orange/blue detection flag
+    let turnDir = 'none'; // 'left' | 'right' | 'none'
+    let prevDiff = 0;
+    let prevAngle = 87;
+
+    const ui = {
+      cvStatus: document.getElementById('cvStatus'),
+      serialDot: document.getElementById('serialDot'),
+      btnConnect: document.getElementById('btnConnect'),
+      btnStart: document.getElementById('btnStart'),
+      btnStop: document.getElementById('btnStop'),
+      baud: document.getElementById('baud'),
+      sendMode: document.getElementById('sendMode'),
+      sendMs: document.getElementById('sendMs'),
+      previewText: document.getElementById('previewText'),
+      kp: document.getElementById('kp'),
+      kd: document.getElementById('kd'),
+      straightConst: document.getElementById('straightConst'),
+      speed: document.getElementById('speed'),
+      turnThresh: document.getElementById('turnThresh'),
+      exitThresh: document.getElementById('exitThresh'),
+      tDeviation: document.getElementById('tDeviation'),
+      blkLow: document.getElementById('blkLow'), blkHigh: document.getElementById('blkHigh'),
+      orgLow: document.getElementById('orgLow'), orgHigh: document.getElementById('orgHigh'),
+      bluLow: document.getElementById('bluLow'), bluHigh: document.getElementById('bluHigh'),
+      roi1: document.getElementById('roi1'), roi2: document.getElementById('roi2'), roi3: document.getElementById('roi3'),
+      turns: document.getElementById('turns'), turnDir: document.getElementById('turnDir'),
+      angle: document.getElementById('angle'), areas: document.getElementById('areas'),
+      video: document.getElementById('video'), canvas: document.getElementById('canvas')
+    };
+
+    // ---------- OpenCV Ready ----------
+    function onOpenCvReady(){
+      cv['onRuntimeInitialized'] = () => {
+        cvReady = true;
+        ui.cvStatus.textContent = 'OpenCV: ready';
+        ui.cvStatus.classList.add('ok');
+        startCamera();
+      };
+    }
+
+    // ---------- Camera ----------
+    async function startCamera(){
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'environment' }, audio: false });
+        ui.video.srcObject = stream;
+      }catch(err){
+        alert('Camera error: '+err);
+      }
+    }
+
+    // ---------- Serial ----------
+    ui.btnConnect.addEventListener('click', async () => {
+      try{
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: Number(ui.baud.value)||9600 });
+        writer = port.writable.getWriter();
+        ui.serialDot.classList.add('on');
+      }catch(err){
+        alert('Serial error: '+err);
+      }
+    });
+
+    async function sendSerial(angle, speed){
+      if(!writer) return;
+      let payload = '';
+      if(ui.sendMode.value==='json'){
+        payload = JSON.stringify({ angle: Math.round(angle), speed: Math.round(speed) })+'\n';
+      } else {
+        payload = `A:${Math.round(angle)};S:${Math.round(speed)}\n`;
+      }
+      ui.previewText.textContent = payload.trim();
+      const data = new TextEncoder().encode(payload);
+      try{ await writer.write(data); }catch(_){ /* ignore transient */ }
+    }
+
+    // ---------- Helpers ----------
+    function parseTuple(str){ return str.split(',').map(s=>Number(s.trim())); }
+    function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+
+    function toHSVRange(lowStr, highStr){
+      const l = parseTuple(lowStr); const h = parseTuple(highStr);
+      return { l: new cv.Mat(1,1,cv.CV_8UC3, new cv.Scalar(l[0],l[1],l[2])), h: new cv.Mat(1,1,cv.CV_8UC3, new cv.Scalar(h[0],h[1],h[2])) };
+    }
+
+    function getROI(mat, roiArr){
+      const [x1,y1,x2,y2] = parseTuple(roiArr.value);
+      const rect = new cv.Rect(x1,y1, x2-x1, y2-y1);
+      return { sub: mat.roi(rect), rect };
+    }
+
+    function largestContourArea(bin){
+      const contours = new cv.MatVector();
+      const hierarchy = new cv.Mat();
+      cv.findContours(bin, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      let maxA = 0; let maxIdx = -1;
+      for(let i=0;i<contours.size();i++){
+        const a = cv.contourArea(contours.get(i));
+        if(a>maxA){ maxA=a; maxIdx=i; }
+      }
+      return { maxA, maxIdx, contours, hierarchy };
+    }
+
+    // ---------- Main Loop ----------
+    let rafId = null; let lastSent = 0;
+
+    function loop(){
+      if(!running || !cvReady){ rafId = requestAnimationFrame(loop); return; }
+
+      // Read UI params
+      const kp = Number(ui.kp.value), kd = Number(ui.kd.value);
+      const straightConst = Number(ui.straightConst.value);
+      const speed = Number(ui.speed.value);
+      const turnThresh = Number(ui.turnThresh.value);
+      const exitThresh = Number(ui.exitThresh.value);
+      const tDeviation = Number(ui.tDeviation.value);
+      const sharpRight = straightConst - tDeviation;
+      const sharpLeft = straightConst + tDeviation;
+      const maxRight = straightConst - 50;
+      const maxLeft = straightConst + 50;
+
+      // Grab frame
+      const video = ui.video;
+      const canvas = ui.canvas;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0,0, canvas.width, canvas.height);
+
+      // Make a cv.Mat from canvas
+      let src = cv.imread(canvas); // RGBA
+      cv.cvtColor(src, src, cv.COLOR_RGBA2BGR);
+
+      // Convert to HSV (robust for color masks); you can switch to Lab if you prefer.
+      let hsv = new cv.Mat();
+      cv.cvtColor(src, hsv, cv.COLOR_BGR2HSV);
+
+      // Blur to reduce noise
+      let blurred = new cv.Mat();
+      let ksize = new cv.Size(7,7);
+      cv.GaussianBlur(hsv, blurred, ksize, 0, 0, cv.BORDER_DEFAULT);
+
+      // ROIs
+      const roi1 = getROI(blurred, ui.roi1); // left lane (black)
+      const roi2 = getROI(blurred, ui.roi2); // right lane (black)
+      const roi3 = getROI(blurred, ui.roi3); // orange/blue line
+
+      // Thresholds
+      const blk = toHSVRange(ui.blkLow.value, ui.blkHigh.value);
+      const org = toHSVRange(ui.orgLow.value, ui.orgHigh.value);
+      const blu = toHSVRange(ui.bluLow.value, ui.bluHigh.value);
+
+      // Masks and areas
+      let maskL = new cv.Mat(); let maskR = new cv.Mat(); let maskO = new cv.Mat(); let maskB = new cv.Mat();
+      cv.inRange(roi1.sub, blk.l, blk.h, maskL);
+      cv.inRange(roi2.sub, blk.l, blk.h, maskR);
+      cv.inRange(roi3.sub, org.l, org.h, maskO);
+      cv.inRange(roi3.sub, blu.l, blu.h, maskB);
+
+      const leftResult = largestContourArea(maskL);
+      const rightResult = largestContourArea(maskR);
+      const leftArea = leftResult.maxA;
+      const rightArea = rightResult.maxA;
+
+      // Orange/Blue detect
+      const orgResult = largestContourArea(maskO);
+      const bluResult = largestContourArea(maskB);
+      const orgArea = orgResult.maxA;
+      const bluArea = bluResult.maxA;
+      if(orgArea > 100){ lDetected = true; if(turnDir==='none') turnDir='right'; }
+      else if(bluArea > 100){ lDetected = true; if(turnDir==='none') turnDir='left'; }
+
+      // PD steering
+      let aDiff = rightArea - leftArea;
+      let angle = Math.max(straightConst + aDiff*kp + (aDiff - prevDiff)*kd, 0);
+
+      // Turn triggers
+      if(leftArea <= turnThresh && !rTurn){ lTurn = true; }
+      else if(rightArea <= turnThresh && !lTurn){ rTurn = true; }
+
+      // First write (startup) mimicked by continuous sending below
+
+      // Angle handling
+      if(lTurn || rTurn){
+        // Exit condition
+        if( (rightArea > exitThresh && rTurn) || (leftArea > exitThresh && lTurn) ){
+          lTurn = false; rTurn = false; prevDiff = 0;
+          if(lDetected){
+            t += 1; lDetected = false;
+          }
+        } else if(lTurn){
+          angle = Math.min(Math.max(angle, sharpLeft), maxLeft);
+        } else if(rTurn){
+          angle = Math.max(Math.min(angle, sharpRight), maxRight);
+        }
+      } else {
+        angle = clamp(angle, sharpRight, sharpLeft);
+      }
+
+      // Send to bot at a fixed period
+      const now = performance.now();
+      if(now - lastSent >= Number(ui.sendMs.value)){
+        sendSerial(angle, speed);
+        lastSent = now;
+      }
+
+      // --- Overlay drawing ---
+      // Draw ROIs
+      ctx.strokeStyle = '#4ecdc4'; ctx.lineWidth = 2;
+      const r1 = roi1.rect, r2 = roi2.rect, r3 = roi3.rect;
+      ctx.strokeRect(r1.x, r1.y, r1.width, r1.height);
+      ctx.strokeRect(r2.x, r2.y, r2.width, r2.height);
+      ctx.strokeStyle = '#ffcc00'; ctx.strokeRect(r3.x, r3.y, r3.width, r3.height);
+
+      // Draw contours (simplified)
+      ctx.lineWidth = 2;
+      
+      // Draw left lane contours (blue)
+      if (leftResult.maxIdx >= 0) {
+        ctx.strokeStyle = '#4ecdc4';
+        const leftContour = leftResult.contours.get(leftResult.maxIdx);
+        if (leftContour.rows > 0) {
+          ctx.beginPath();
+          for (let i = 0; i < leftContour.rows; i++) {
+            const x = leftContour.data32S[i * 2] + r1.x;
+            const y = leftContour.data32S[i * 2 + 1] + r1.y;
+            if (i === 0) {
+              ctx.moveTo(x, y);
+            } else {
+              ctx.lineTo(x, y);
+            }
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+      }
+
+      // Draw right lane contours (green)
+      if (rightResult.maxIdx >= 0) {
+        ctx.strokeStyle = '#39d353';
+        const rightContour = rightResult.contours.get(rightResult.maxIdx);
+        if (rightContour.rows > 0) {
+          ctx.beginPath();
+          for (let i = 0; i < rightContour.rows; i++) {
+            const x = rightContour.data32S[i * 2] + r2.x;
+            const y = rightContour.data32S[i * 2 + 1] + r2.y;
+            if (i === 0) {
+              ctx.moveTo(x, y);
+            } else {
+              ctx.lineTo(x, y);
+            }
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+      }
+
+      // Draw orange contours (orange)
+      if (orgResult.maxIdx >= 0) {
+        ctx.strokeStyle = '#ff6b35';
+        const orgContour = orgResult.contours.get(orgResult.maxIdx);
+        if (orgContour.rows > 0) {
+          ctx.beginPath();
+          for (let i = 0; i < orgContour.rows; i++) {
+            const x = orgContour.data32S[i * 2] + r3.x;
+            const y = orgContour.data32S[i * 2 + 1] + r3.y;
+            if (i === 0) {
+              ctx.moveTo(x, y);
+            } else {
+              ctx.lineTo(x, y);
+            }
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+      }
+
+      // Draw blue contours (blue)
+      if (bluResult.maxIdx >= 0) {
+        ctx.strokeStyle = '#0066cc';
+        const bluContour = bluResult.contours.get(bluResult.maxIdx);
+        if (bluContour.rows > 0) {
+          ctx.beginPath();
+          for (let i = 0; i < bluContour.rows; i++) {
+            const x = bluContour.data32S[i * 2] + r3.x;
+            const y = bluContour.data32S[i * 2 + 1] + r3.y;
+            if (i === 0) {
+              ctx.moveTo(x, y);
+            } else {
+              ctx.lineTo(x, y);
+            }
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+      }
+
+      // Debug text
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(6,6, 210, 100);
+      ctx.fillStyle = '#e7eef6'; ctx.font='12px monospace';
+      ctx.fillText(`leftArea: ${leftArea.toFixed(0)}`, 12, 22);
+      ctx.fillText(`rightArea: ${rightArea.toFixed(0)}`, 12, 38);
+      ctx.fillText(`angle: ${angle.toFixed(1)} deg`, 12, 54);
+      ctx.fillText(`turns: ${t}  dir:${turnDir}`, 12, 70);
+      ctx.fillText(`contours: L:${leftResult.contours.size()} R:${rightResult.contours.size()}`, 12, 86);
+      ctx.fillText(`O:${orgResult.contours.size()} B:${bluResult.contours.size()}`, 12, 102);
+
+      // Update UI labels
+      ui.turns.textContent = String(t);
+      ui.turnDir.textContent = turnDir;
+      ui.angle.textContent = `${angle.toFixed(1)}°`;
+      ui.areas.textContent = `${leftArea.toFixed(0)} / ${rightArea.toFixed(0)}`;
+
+      // Cleanup
+      src.delete(); hsv.delete(); blurred.delete();
+      maskL.delete(); maskR.delete(); maskO.delete(); maskB.delete();
+      blk.l.delete(); blk.h.delete(); org.l.delete(); org.h.delete(); blu.l.delete(); blu.h.delete();
+      roi1.sub.delete(); roi2.sub.delete(); roi3.sub.delete();
+      
+      // Cleanup contour objects
+      leftResult.contours.delete(); leftResult.hierarchy.delete();
+      rightResult.contours.delete(); rightResult.hierarchy.delete();
+      orgResult.contours.delete(); orgResult.hierarchy.delete();
+      bluResult.contours.delete(); bluResult.hierarchy.delete();
+
+      prevDiff = aDiff; prevAngle = angle;
+
+      rafId = requestAnimationFrame(loop);
+    }
+
+    // ---------- Start/Stop ----------
+    ui.btnStart.addEventListener('click', () => {
+      if(!cvReady){ alert('OpenCV not ready yet'); return; }
+      running = true;
+      if(!rafId) rafId = requestAnimationFrame(loop);
+    });
+
+    ui.btnStop.addEventListener('click', async () => {
+      running = false;
+      if(rafId){ cancelAnimationFrame(rafId); rafId = null; }
+      // Send a stop command
+      await sendSerial(Number(ui.straightConst.value), 1500); // neutral-ish
+    });
+
+    // ---------- Graceful unload ----------
+    window.addEventListener('beforeunload', async () => {
+      running = false; if(rafId) cancelAnimationFrame(rafId);
+      try{ if(writer){ writer.releaseLock(); } if(port){ await port.close(); } }catch(_){ }
+    });
+  </script>
+</body>
+</html>
