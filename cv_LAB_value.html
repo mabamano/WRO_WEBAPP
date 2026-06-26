@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RC Autonomy Advanced – OpenCV.js + Web Serial (Lab)</title>
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvReady()"></script>
+  <style>
+    :root { --bg: #0b0f14; --fg: #e7eef6; --muted:#9fb3c8; --accent:#4ecdc4; --accent2:#ffcc00; --bad:#ff6b6b; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    header { padding: 14px 18px; display: flex; gap: 12px; align-items: center; border-bottom: 1px solid #14202a; }
+    header h1 { font-size: 18px; margin: 0; color: var(--fg); }
+    header .dot { width: 10px; height: 10px; border-radius: 50%; background: #555; display: inline-block; }
+    header .dot.on { background: #39d353; }
+    main { display: grid; grid-template-columns: 500px 1fr; gap: 16px; padding: 16px; }
+    section.card { background: #0f1520; border: 1px solid #182434; border-radius: 16px; padding: 14px; }
+    h2 { font-size: 16px; margin: 0 0 10px; color: var(--accent); }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button { padding: 8px 12px; border-radius: 12px; border: 1px solid #213246; background: #152133; color: var(--fg); cursor: pointer; }
+    button:hover { background: #1b2a40; }
+    button.primary { background: var(--accent); color: #041015; border-color: transparent; font-weight: 600; }
+    button.warn { background: var(--bad); color: #170606; border: none; }
+    input[type="text"] {
+      width: 100%; max-width: 200px; padding: 6px 8px; border-radius: 8px; border: 1px solid #223549;
+      background: #0e1724; color: var(--fg);
+    }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .muted { color: var(--muted); }
+    .kv { display: grid; grid-template-columns: 120px auto; gap: 6px 8px; align-items: center; }
+    canvas, video { width: 640px; height: 480px; background: #000; border-radius: 12px; }
+    .stack { display: grid; gap: 8px; }
+    .pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; background: #122033; border: 1px solid #1b2f47; color: var(--muted); }
+    .ok { color: #39d353; }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>RC Autonomy Advanced – OpenCV.js + Web Serial</h1>
+    <span class="pill">Pillar Detection (Lab) — sends 'f','l','r','s'</span>
+    <span id="cvStatus" class="pill">OpenCV: loading…</span>
+    <span id="serialDot" class="dot" title="Serial status"></span>
+  </header>
+
+  <main>
+    <section class="card stack" style="height:max-content">
+      <h2>Controls</h2>
+      <div class="row">
+        <button class="primary" id="btnConnect">Connect Serial</button>
+        <button id="btnStart">Start</button>
+        <button id="btnStop" class="warn">Stop</button>
+      </div>
+
+      <h2 style="margin-top:12px">Color Thresholds (Lab)</h2>
+      <p class="muted">Click on the canvas to sample color → auto-fill Lab low/high ranges.</p>
+      <div class="grid-2">
+        <div>
+          <strong>Red / Orange (pillars)</strong>
+          <div class="kv">
+            <label>low</label><input type="text" id="redLow" value="40,150,150" />
+            <label>high</label><input type="text" id="redHigh" value="255,205,255" />
+          </div>
+        </div>
+        <div>
+          <strong>Green (pillars)</strong>
+          <div class="kv">
+            <label>low</label><input type="text" id="greenLow" value="40,100,70" />
+            <label>high</label><input type="text" id="greenHigh" value="230,160,140" />
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card stack">
+      <h2>Vision</h2>
+      <video id="video" autoplay playsinline style="display:none"></video>
+      <canvas id="canvas" width="640" height="480"></canvas>
+      <div class="row muted"><span>Click on object to sample color.</span></div>
+    </section>
+  </main>
+
+  <script>
+    let cvReady = false;
+    const ui = {
+      cvStatus: document.getElementById('cvStatus'),
+      video: document.getElementById('video'),
+      canvas: document.getElementById('canvas'),
+      redLow: document.getElementById('redLow'),
+      redHigh: document.getElementById('redHigh'),
+      greenLow: document.getElementById('greenLow'),
+      greenHigh: document.getElementById('greenHigh')
+    };
+
+    function onOpenCvReady(){
+      cv['onRuntimeInitialized'] = () => {
+        cvReady = true;
+        ui.cvStatus.textContent = 'OpenCV: ready';
+        ui.cvStatus.classList.add('ok');
+        startCamera();
+      };
+    }
+
+    function startCamera(){
+      navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+        ui.video.srcObject = stream;
+        ui.video.play();
+        requestAnimationFrame(updateCanvas);
+      }).catch(err => {
+        alert("Error accessing webcam: " + err);
+      });
+    }
+
+    function updateCanvas(){
+      const ctx = ui.canvas.getContext('2d');
+      ctx.drawImage(ui.video, 0, 0, ui.canvas.width, ui.canvas.height);
+      requestAnimationFrame(updateCanvas);
+    }
+
+    // --- click-to-sample Lab color ---
+    ui.canvas.addEventListener('click', (ev)=>{
+      if(!cvReady) return;
+      const rect = ui.canvas.getBoundingClientRect();
+      const x = Math.floor((ev.clientX - rect.left) * ui.canvas.width / rect.width);
+      const y = Math.floor((ev.clientY - rect.top) * ui.canvas.height / rect.height);
+
+      let src = cv.imread(ui.canvas); // RGBA
+      let bgr = new cv.Mat(); cv.cvtColor(src, bgr, cv.COLOR_RGBA2BGR);
+      let lab = new cv.Mat(); cv.cvtColor(bgr, lab, cv.COLOR_BGR2Lab);
+
+      const pixel = lab.ucharPtr(y,x);
+      const L = pixel[0], A = pixel[1], B = pixel[2];
+
+      const low  = [Math.max(0,L-20), Math.max(0,A-20), Math.max(0,B-20)];
+      const high = [Math.min(255,L+20), Math.min(255,A+20), Math.min(255,B+20)];
+
+      ui.greenLow.value  = low.join(',');
+      ui.greenHigh.value = high.join(',');
+
+      alert(`Sampled Lab: ${L},${A},${B}\nRange set:\nLow=${low}\nHigh=${high}`);
+
+      src.delete(); bgr.delete(); lab.delete();
+    });
+  </script>
+</body>
+</html>

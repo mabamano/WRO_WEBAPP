@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RC Autonomy Advanced – OpenCV.js + Web Serial (Lab, patched)</title>
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvReady()"></script>
+  <style>
+    :root {
+      --bg: #0b0f14; --fg: #e7eef6; --muted:#9fb3c8; --accent:#4ecdc4; --accent2:#ffcc00; --bad:#ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    header { padding: 14px 18px; display: flex; gap: 12px; align-items: center; border-bottom: 1px solid #14202a; }
+    header h1 { font-size: 18px; margin: 0; color: var(--fg); }
+    header .dot { width: 10px; height: 10px; border-radius: 50%; background: #555; display: inline-block; }
+    header .dot.on { background: #39d353; }
+    main {
+      display: grid;
+      grid-template-columns: 500px 1fr; /* fixed sidebar width */
+      gap: 16px;
+      padding: 16px;
+    }
+    section.card { background: #0f1520; border: 1px solid #182434; border-radius: 16px; padding: 14px; }
+    h2 { font-size: 16px; margin: 0 0 10px; color: var(--accent); }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button { padding: 8px 12px; border-radius: 12px; border: 1px solid #213246; background: #152133; color: var(--fg); cursor: pointer; }
+    button:hover { background: #1b2a40; }
+    button.primary { background: var(--accent); color: #041015; border-color: transparent; font-weight: 600; }
+    button.warn { background: var(--bad); color: #170606; border: none; }
+    label { color: var(--muted); font-size: 12px; }
+    input[type="number"], input[type="text"] {
+      width: 100%;
+      max-width: 200px; /* prevent overflow */
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid #223549;
+      background: #0e1724;
+      color: var(--fg);
+    }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .muted { color: var(--muted); }
+    .kv {
+      display: grid;
+      grid-template-columns: 120px auto; /* keep labels + inputs tidy */
+      gap: 6px 8px;
+      align-items: center;
+    }
+    canvas, video { width: 640px; height: 480px; background: #000; border-radius: 12px; }
+    .stack { display: grid; gap: 8px; }
+    .pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; background: #122033; border: 1px solid #1b2f47; color: var(--muted); }
+    .ok { color: #39d353; }
+  </style>
+</head>
+<body>
+  <!-- the rest of your HTML + JS stays unchanged -->
+
+  <header>
+    <h1>RC Autonomy Advanced – OpenCV.js + Web Serial</h1>
+    <span class="pill">Pillar Detection (Lab) — sends 'f','l','r','s'</span>
+    <span id="cvStatus" class="pill">OpenCV: loading…</span>
+    <span id="serialDot" class="dot" title="Serial status"></span>
+  </header>
+
+  <main>
+    <section class="card stack" style="height:max-content">
+      <h2>Controls</h2>
+      <div class="row">
+        <button class="primary" id="btnConnect">Connect Serial</button>
+        <button id="btnStart">Start</button>
+        <button id="btnStop" class="warn">Stop</button>
+      </div>
+      <div class="kv" style="margin-top:10px">
+        <label>Baud</label><input type="number" id="baud" value="115200" />
+        <label>Send period (ms)</label><input type="number" id="sendMs" value="50" />
+        <label>Preview</label><span id="previewText" class="muted">—</span>
+      </div>
+
+      <h2 style="margin-top:12px">Pillar Detection Parameters</h2>
+      <div class="kv">
+        <label>cKp (pillar)</label><input type="number" id="cKp" value="0.25" step="0.01" />
+        <label>cKd (pillar)</label><input type="number" id="cKd" value="0.25" step="0.01" />
+        <label>cy</label><input type="number" id="cy" value="0.08" step="0.01" />
+        <label>Straight (deg)</label><input type="number" id="straightConst" value="87" />
+        <label>Speed (not used for char cmd)</label><input type="number" id="speed" value="1660" />
+        <label>Max Dist</label><input type="number" id="maxDist" value="370" />
+        <label>End Const</label><input type="number" id="endConst" value="40" />
+      </div>
+
+      <h2 style="margin-top:12px">Color Thresholds (Lab)</h2>
+      <p class="muted">Use Lab ranges: L,A,B (0–255 each). Tweak to match your boxes.</p>
+      <div class="grid-2">
+        <div>
+          <strong>Red / Orange (pillars)</strong>
+          <div class="kv">
+            <label>low</label><input type="text" id="redLow" value="40,150,150" />
+            <label>high</label><input type="text" id="redHigh" value="255,205,255" />
+          </div>
+        </div>
+        <div>
+          <strong>Green (pillars)</strong>
+          <div class="kv">
+            <!-- conservative defaults that avoid hair (low L) -->
+            <label>low</label><input type="text" id="greenLow" value="40,100,70" />
+            <label>high</label><input type="text" id="greenHigh" value="230,160,140" />
+          </div>
+        </div>
+        <div>
+          <strong>Magenta (parking)</strong>
+          <div class="kv">
+            <label>low</label><input type="text" id="magentaLow" value="60,120,120" />
+            <label>high</label><input type="text" id="magentaHigh" value="200,170,170" />
+          </div>
+        </div>
+      </div>
+
+      <h2 style="margin-top:12px">ROIs (x1,y1,x2,y2)</h2>
+      <div class="grid-2">
+        <div>
+          <strong>Pillars ROI</strong>
+          <input type="text" id="roi3" value="60,120,590,345" />
+        </div>
+        <div>
+          <strong>Parking ROI</strong>
+          <input type="text" id="roi4" value="200,260,440,310" />
+        </div>
+      </div>
+
+      <h2 style="margin-top:12px">Status</h2>
+      <div class="kv">
+        <label>Angle</label><span id="angle">—</span>
+        <label>Pillar Area</label><span id="pillarArea">—</span>
+        <label>Pillar Dist</label><span id="pillarDist">—</span>
+        <label>Red Pillars</label><span id="redPillars">0</span>
+        <label>Green Pillars</label><span id="greenPillars">0</span>
+        <label>Parking Detected</label><span id="parking">none</span>
+      </div>
+    </section>
+
+    <section class="card stack">
+      <h2>Vision</h2>
+      <div class="row">
+        <video id="video" autoplay playsinline muted width="640" height="480" style="display:none"></video>
+      </div>
+      <div class="row">
+         <canvas id="canvas" width="640" height="480" style="will-read-frequently: true;"></canvas>
+      </div>
+      <div class="row muted">
+        <span>Pillar detection (Lab). Try increasing Red/Green L minimum if hair still appears.</span>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // ---------- State ----------
+    let cvReady = false;
+    let running = false;
+    let port = null, writer = null;
+    let lastSent = 0;
+
+    const CMD_RIGHT = 'r', CMD_LEFT = 'l', CMD_FWD = 'f', CMD_STOP = 's';
+
+    const ui = {
+      cvStatus: document.getElementById('cvStatus'),
+      serialDot: document.getElementById('serialDot'),
+      btnConnect: document.getElementById('btnConnect'),
+      btnStart: document.getElementById('btnStart'),
+      btnStop: document.getElementById('btnStop'),
+      baud: document.getElementById('baud'),
+      sendMs: document.getElementById('sendMs'),
+      previewText: document.getElementById('previewText'),
+      cKp: document.getElementById('cKp'),
+      cKd: document.getElementById('cKd'),
+      cy: document.getElementById('cy'),
+      straightConst: document.getElementById('straightConst'),
+      speed: document.getElementById('speed'),
+      maxDist: document.getElementById('maxDist'),
+      endConst: document.getElementById('endConst'),
+      redLow: document.getElementById('redLow'), redHigh: document.getElementById('redHigh'),
+      greenLow: document.getElementById('greenLow'), greenHigh: document.getElementById('greenHigh'),
+      magentaLow: document.getElementById('magentaLow'), magentaHigh: document.getElementById('magentaHigh'),
+      roi3: document.getElementById('roi3'), roi4: document.getElementById('roi4'),
+      angle: document.getElementById('angle'), pillarArea: document.getElementById('pillarArea'),
+      pillarDist: document.getElementById('pillarDist'), redPillars: document.getElementById('redPillars'),
+      greenPillars: document.getElementById('greenPillars'), parking: document.getElementById('parking'),
+      canvas: document.getElementById('canvas')
+    };
+
+    // ---------- Helpers ----------
+    function parseTuple(str){ return str.split(',').map(s=>Number(s.trim())); }
+    function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+
+    // create threshold Mats for Lab lower/upper (three-channel) - returns {l:Mat, h:Mat}
+    function toLabRange(lowStr, highStr){
+      const l = parseTuple(lowStr); const h = parseTuple(highStr);
+      // OpenCV.js uses CV_8UC3 Scalar in Mat same as earlier HSV helper
+      return {
+        l: new cv.Mat(1,1,cv.CV_8UC3, new cv.Scalar(l[0], l[1], l[2])),
+        h: new cv.Mat(1,1,cv.CV_8UC3, new cv.Scalar(h[0], h[1], h[2]))
+      };
+    }
+
+    function getROI(mat, roiArr){
+      const [x1,y1,x2,y2] = parseTuple(roiArr.value);
+      const rect = new cv.Rect(x1,y1, x2-x1, y2-y1);
+      return { sub: mat.roi(rect), rect };
+    }
+
+    function largestContourArea(bin){
+      const contours = new cv.MatVector();
+      const hierarchy = new cv.Mat();
+      cv.findContours(bin, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      let maxA = 0; let maxIdx = -1;
+      for(let i=0;i<contours.size();i++){
+        const a = cv.contourArea(contours.get(i));
+        if(a>maxA){ maxA=a; maxIdx=i; }
+      }
+      return { maxA, maxIdx, contours, hierarchy };
+    }
+
+    class Pillar {
+      constructor(area, dist, x, y, target) {
+        this.area = area; this.dist = dist; this.x = x; this.y = y; this.target = target;
+        this.w = 0; this.h = 0;
+      }
+      setDimensions(w, h){ this.w = w; this.h = h; }
+    }
+
+    function findPillar(contours, target, p, colour, roiOffsetX, roiOffsetY, maxDist, endConst){
+      let numP = 0;
+      for(let i=0;i<contours.size();i++){
+        const cnt = contours.get(i);
+        const area = cv.contourArea(cnt);
+        if ((area > 150 && colour === "red") || (area > 200 && colour === "green")) {
+          const approx = new cv.Mat();
+          cv.approxPolyDP(cnt, approx, 0.01 * cv.arcLength(cnt, true), true);
+          const br = cv.boundingRect(approx);
+          const x = br.x + roiOffsetX + br.width / 2;
+          const y = br.y + roiOffsetY + br.height;
+          const tempDist = Math.round(Math.sqrt(Math.pow(x - 320, 2) + Math.pow(y - 480, 2)));
+          if (160 < tempDist && tempDist < 380) numP += 1;
+          if (y > (roiOffsetY + endConst) || tempDist > maxDist) { approx.delete(); continue; }
+          if (tempDist < p.dist) {
+            p.area = area; p.dist = tempDist; p.y = y; p.x = x; p.target = target; p.setDimensions(br.width, br.height);
+          }
+          approx.delete();
+        }
+      }
+      return { p, numP };
+    }
+
+    // ---------- OpenCV Ready ----------
+    function onOpenCvReady(){
+      cv['onRuntimeInitialized'] = () => {
+        cvReady = true;
+        ui.cvStatus.textContent = 'OpenCV: ready';
+        ui.cvStatus.classList.add('ok');
+      };
+    }
+
+    // ---------- Serial ----------
+    ui.btnConnect.addEventListener('click', async () => {
+      try{
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: Number(ui.baud.value)||115200 });
+        writer = port.writable.getWriter();
+        ui.serialDot.classList.add('on');
+      }catch(err){
+        alert('Serial error: '+err);
+      }
+    });
+
+    async function sendSerialChar(cmd){
+      if(!writer) return;
+      const payload = new TextEncoder().encode(cmd + '\n');
+      try { await writer.write(payload); ui.previewText.textContent = cmd; }
+      catch(e){ console.warn('Serial write failed', e); }
+    }
+
+    let lastSendTime = 0;
+    async function sendCmdRateLimited(cmd){
+      const now = performance.now();
+      const period = Number(ui.sendMs.value) || 50;
+      if (now - lastSendTime >= period) {
+        await sendSerialChar(cmd);
+        lastSendTime = now;
+      }
+    }
+
+    // ---------- Camera + Loop ----------
+    let rafId = null;
+    let prevError = 0;
+
+    async function startCameraAndLoop(){
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'environment' }, audio: false });
+        const videoEl = document.createElement('video');
+        videoEl.autoplay = true; videoEl.playsInline = true; videoEl.muted = true;
+        videoEl.srcObject = stream;
+        await videoEl.play();
+        window._cv_video_el = videoEl;
+
+        if (!rafId) rafId = requestAnimationFrame(function loop(){
+          if(!cvReady || !running){ rafId = requestAnimationFrame(loop); return; }
+
+          try {
+            const straightConst = Number(ui.straightConst.value);
+            const cKp = Number(ui.cKp.value);
+            const cKd = Number(ui.cKd.value);
+            const cy = Number(ui.cy.value);
+            const maxDist = Number(ui.maxDist.value);
+            const endConst = Number(ui.endConst.value);
+
+            const canvas = ui.canvas;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+
+            // Mats
+            let src = cv.imread(canvas); // RGBA
+            let srcBGR = new cv.Mat();
+            cv.cvtColor(src, srcBGR, cv.COLOR_RGBA2BGR);
+
+            // convert to Lab
+            let lab = new cv.Mat();
+            cv.cvtColor(srcBGR, lab, cv.COLOR_BGR2Lab);
+
+            // blur
+            let blurred = new cv.Mat();
+            cv.GaussianBlur(lab, blurred, new cv.Size(7,7), 0, 0, cv.BORDER_DEFAULT);
+
+            // ROIs
+            const roi3 = getROI(blurred, ui.roi3);
+            const roi4 = getROI(blurred, ui.roi4);
+
+            // thresholds (Lab ranges from UI)
+            const red = toLabRange(ui.redLow.value, ui.redHigh.value);
+            const green = toLabRange(ui.greenLow.value, ui.greenHigh.value);
+            const magenta = toLabRange(ui.magentaLow.value, ui.magentaHigh.value);
+
+            // create masks
+            let maskRed = new cv.Mat(), maskGreen = new cv.Mat(), maskMagenta = new cv.Mat();
+            cv.inRange(roi3.sub, red.l, red.h, maskRed);
+            cv.inRange(roi3.sub, green.l, green.h, maskGreen);
+            cv.inRange(roi4.sub, magenta.l, magenta.h, maskMagenta);
+
+            // Brightness (L channel) filter to reject dark hair/shadows
+            // roiX.sub is 3-ch Lab Mat; extract L channel and threshold
+            let roi3Channels = new cv.MatVector();
+            let L3 = new cv.Mat();
+            cv.split(roi3.sub, roi3Channels);
+            L3 = roi3Channels.get(0); // L channel
+            let brightMask3 = new cv.Mat();
+            // only keep pixels with L > 80 (tunable)
+            cv.threshold(L3, brightMask3, 80, 255, cv.THRESH_BINARY);
+
+            let roi4Channels = new cv.MatVector();
+            let L4 = new cv.Mat();
+            cv.split(roi4.sub, roi4Channels);
+            L4 = roi4Channels.get(0);
+            let brightMask4 = new cv.Mat();
+            cv.threshold(L4, brightMask4, 80, 255, cv.THRESH_BINARY);
+
+            // Apply brightness mask to color masks
+            let maskRedBright = new cv.Mat(), maskGreenBright = new cv.Mat(), maskMagentaBright = new cv.Mat();
+            cv.bitwise_and(maskRed, brightMask3, maskRedBright);
+            cv.bitwise_and(maskGreen, brightMask3, maskGreenBright);
+            cv.bitwise_and(maskMagenta, brightMask4, maskMagentaBright);
+
+            // morphological clean (close -> remove holes)
+            let kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5,5));
+            cv.morphologyEx(maskRedBright, maskRedBright, cv.MORPH_CLOSE, kernel);
+            cv.morphologyEx(maskGreenBright, maskGreenBright, cv.MORPH_CLOSE, kernel);
+            cv.morphologyEx(maskMagentaBright, maskMagentaBright, cv.MORPH_CLOSE, kernel);
+
+            // find largest contours
+            const redResult = largestContourArea(maskRedBright);
+            const greenResult = largestContourArea(maskGreenBright);
+            const magentaResult = largestContourArea(maskMagentaBright);
+
+            // pillar selection
+            let tempPillar = new Pillar(0, Number.MAX_SAFE_INTEGER, 0, 0, 320);
+            let redCount = 0, greenCount = 0;
+
+            if (greenResult.maxIdx >= 0) {
+              const r = findPillar(greenResult.contours, 320, tempPillar, "green",
+                                   parseTuple(ui.roi3.value)[0], parseTuple(ui.roi3.value)[1],
+                                   maxDist, endConst);
+              tempPillar = r.p; greenCount = r.numP;
+            }
+            if (redResult.maxIdx >= 0) {
+              const r = findPillar(redResult.contours, 320, tempPillar, "red",
+                                   parseTuple(ui.roi3.value)[0], parseTuple(ui.roi3.value)[1],
+                                   maxDist, endConst);
+              tempPillar = r.p; redCount = r.numP;
+            }
+
+            // parking
+            let parkingDetected = "none";
+            if (magentaResult.maxA > 500) parkingDetected = "detected";
+
+            // compute angle
+            let angle = Number(ui.straightConst.value);
+            if (tempPillar.area > 0) {
+              const error = tempPillar.target - tempPillar.x;
+              angle = angle + error * Number(ui.cKp.value) + (error - prevError) * Number(ui.cKd.value);
+              angle -= Number(ui.cy.value) * (tempPillar.y - parseTuple(ui.roi3.value)[1]) * (error <= 0 ? 1 : -1);
+              prevError = error;
+            }
+            angle = clamp(angle, 0, 180);
+
+            // decision -> char cmds
+            const ANGLE_THRESH = 4.0;
+            const FAILSAFE_MIN_AREA = 50;
+            let cmd = CMD_FWD;
+            if (parkingDetected === 'detected') {
+              cmd = CMD_STOP;
+            } else {
+              const delta = angle - Number(ui.straightConst.value);
+              if (Math.abs(tempPillar.area) < 1 && redResult.maxA < FAILSAFE_MIN_AREA && greenResult.maxA < FAILSAFE_MIN_AREA) {
+                cmd = CMD_STOP;
+              } else {
+                if (delta >= ANGLE_THRESH) cmd = CMD_LEFT;
+                else if (delta <= -ANGLE_THRESH) cmd = CMD_RIGHT;
+                else cmd = CMD_FWD;
+              }
+            }
+            sendCmdRateLimited(cmd);
+
+            // overlays
+            const r3rect = roi3.rect, r4rect = roi4.rect;
+            ctx.strokeStyle = '#ffcc00'; ctx.lineWidth = 3;
+            ctx.strokeRect(r3rect.x, r3rect.y, r3rect.width, r3rect.height);
+            ctx.strokeStyle = '#ff6b35'; ctx.lineWidth = 3;
+            ctx.strokeRect(r4rect.x, r4rect.y, r4rect.width, r4rect.height);
+
+            function drawResult(result, color, roiRect){
+              if (result.maxIdx >= 0 && result.contours.size() > 0) {
+                try {
+                  const cnt = result.contours.get(result.maxIdx);
+                  const br = cv.boundingRect(cnt);
+                  ctx.strokeStyle = color; ctx.lineWidth = 2;
+                  ctx.strokeRect(br.x + roiRect.x, br.y + roiRect.y, br.width, br.height);
+                  const cx = br.x + br.width/2 + roiRect.x;
+                  const cyc = br.y + br.height/2 + roiRect.y;
+                  ctx.beginPath(); ctx.arc(cx, cyc, 4, 0, 2*Math.PI); ctx.fillStyle = color; ctx.fill();
+                } catch(e) {
+                  console.warn('drawResult error', e);
+                }
+              }
+            }
+
+            drawResult(redResult, '#ff6b6b', r3rect);
+            drawResult(greenResult, '#39d353', r3rect);
+            drawResult(magentaResult, '#ff00ff', r4rect);
+
+            // debug & UI
+            ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(6,6, 320, 120);
+            ctx.fillStyle = '#e7eef6'; ctx.font='12px monospace';
+            ctx.fillText(`angle: ${angle.toFixed(1)}°`, 12, 22);
+            ctx.fillText(`pillar area:${tempPillar.area.toFixed(0)} dist:${tempPillar.dist.toFixed(0)}`, 12, 38);
+            ctx.fillText(`red:${redCount} green:${greenCount}`, 12, 54);
+            ctx.fillText(`parking: ${parkingDetected}`, 12, 70);
+
+            ui.angle.textContent = `${angle.toFixed(1)}°`;
+            ui.pillarArea.textContent = tempPillar.area.toFixed(0);
+            ui.pillarDist.textContent = tempPillar.dist.toFixed(0);
+            ui.redPillars.textContent = String(redCount);
+            ui.greenPillars.textContent = String(greenCount);
+            ui.parking.textContent = parkingDetected;
+
+            // === CLEANUP ===
+            try {
+              src.delete(); srcBGR.delete(); lab.delete(); blurred.delete();
+              maskRed.delete(); maskGreen.delete(); maskMagenta.delete();
+              brightMask3.delete(); brightMask4.delete();
+              maskRedBright.delete(); maskGreenBright.delete(); maskMagentaBright.delete();
+              kernel.delete();
+              // delete threshold mats
+              red.l.delete(); red.h.delete(); green.l.delete(); green.h.delete();
+              magenta.l.delete(); magenta.h.delete();
+              // delete roi subs and channel mats
+              roi3.sub.delete(); roi4.sub.delete();
+              roi3Channels.delete(); roi4Channels.delete();
+              L3.delete(); L4.delete();
+              // delete contour mats
+              redResult.contours.delete(); redResult.hierarchy.delete();
+              greenResult.contours.delete(); greenResult.hierarchy.delete();
+              magentaResult.contours.delete(); magentaResult.hierarchy.delete();
+            } catch(cleanErr){
+              console.warn('cleanup error', cleanErr);
+            }
+
+          } catch (err) {
+            console.error('loop error', err);
+          }
+          rafId = requestAnimationFrame(loop);
+        });
+
+      } catch (e) {
+        alert('Camera error: ' + e);
+        console.error('Camera/start error', e);
+      }
+    }
+
+    // ---------- Start/Stop ----------
+    ui.btnStart.addEventListener('click', () => {
+      if(!cvReady){ alert('OpenCV not ready yet'); return; }
+      if(!running){
+        running = true;
+        if(!rafId) startCameraAndLoop();
+      }
+    });
+
+    ui.btnStop.addEventListener('click', async () => {
+      running = false;
+      await sendSerialChar(CMD_STOP);
+      ui.previewText.textContent = 's';
+    });
+
+    window.addEventListener('beforeunload', async () => {
+      running = false;
+      try{ if(writer){ writer.releaseLock(); } if(port){ await port.close(); } }catch(_){}
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Auto Green Detector (Lab Sweep)</title>
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvReady()"></script>
+  <style>
+    body { background:#111; color:#eee; font-family:monospace; }
+    #canvas { border:2px solid #555; border-radius:8px; }
+  </style>
+</head>
+<body>
+  <h2>Green Detection with Auto Threshold Sweep</h2>
+  <p id="status">OpenCV loading…</p>
+  <p id="thresh">Threshold: —</p>
+  <video id="video" width="640" height="480" autoplay playsinline muted style="display:none"></video>
+  <canvas id="canvas" width="640" height="480"></canvas>
+
+<script>
+let cvReady = false;
+
+function onOpenCvReady(){
+  cv['onRuntimeInitialized'] = () => {
+    cvReady = true;
+    document.getElementById('status').textContent = "OpenCV ready ✅";
+    startCamera();
+  }
+}
+
+async function startCamera(){
+  const video = document.getElementById('video');
+  const stream = await navigator.mediaDevices.getUserMedia({ video:{width:640, height:480} });
+  video.srcObject = stream;
+  await video.play();
+  detectLoop(video);
+}
+
+function detectLoop(video){
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  let frame = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+
+  // Threshold ranges and step
+  let lowL=40, lowA=100, lowB=70;
+  let highL=230, highA=160, highB=140;
+  let step = 5;
+
+  function loop(){
+    if(!cvReady){ requestAnimationFrame(loop); return; }
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    cv.imread(canvas, frame);
+
+    let bgr = new cv.Mat();
+    cv.cvtColor(frame, bgr, cv.COLOR_RGBA2BGR);
+    let lab = new cv.Mat();
+    cv.cvtColor(bgr, lab, cv.COLOR_BGR2Lab);
+
+    // Cycle thresholds
+    lowA += step;
+    highA += step;
+    if(highA > 255 || lowA > 255){ lowA=100; highA=160; } // reset
+
+    let low = new cv.Mat(lab.rows, lab.cols, lab.type(), [lowL, lowA, lowB, 0]);
+    let high = new cv.Mat(lab.rows, lab.cols, lab.type(), [highL, highA, highB, 255]);
+
+    let mask = new cv.Mat();
+    cv.inRange(lab, low, high, mask);
+
+    // Find contours
+    let contours = new cv.MatVector();
+    let hierarchy = new cv.Mat();
+    cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    for(let i=0;i<contours.size();i++){
+      let cnt = contours.get(i);
+      let area = cv.contourArea(cnt);
+      if(area > 300){ // valid detection
+        let rect = cv.boundingRect(cnt);
+        ctx.strokeStyle = "lime"; ctx.lineWidth = 2;
+        ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+      }
+    }
+
+    // Show thresholds being tested
+    document.getElementById('thresh').textContent =
+      `Low:[${lowL},${lowA},${lowB}] High:[${highL},${highA},${highB}]`;
+
+    // cleanup
+    bgr.delete(); lab.delete(); low.delete(); high.delete();
+    mask.delete(); contours.delete(); hierarchy.delete();
+
+    requestAnimationFrame(loop);
+  }
+  loop();
+}
+</script>
+</body>
+</html>
